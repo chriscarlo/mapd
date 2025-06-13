@@ -1,4 +1,6 @@
-# Openpilot mapd
+# Openpilot mapd (chriscarlo fork)
+Fork of [pfeiferj/mapd](https://github.com/pfeiferj/mapd) for custom 2023 Kia EV6 development.
+
 Provides openpilot with data from mapd
 
 ## Using
