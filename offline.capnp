@@ -18,6 +18,16 @@ struct Way {
   oneWay @11 :Bool;
   maxSpeedForward @12 :Float64;
   maxSpeedBackward @13 :Float64;
+  windingForwardLevel @14 :UInt8;
+  windingBackwardLevel @15 :UInt8;
+  windingForwardScore @16 :UInt8;
+  windingBackwardScore @17 :UInt8;
+  windingForwardConfidence @18 :UInt8;
+  windingBackwardConfidence @19 :UInt8;
+  # Per-node sigmoid-derived safe speeds (m/s), parallel to `nodes`.
+  # Populated when the tile was generated with schemaVersion >= 1.
+  # Len(safeSpeeds) == Len(nodes); endpoints saturate at the default max speed.
+  safeSpeeds @20 :List(Float64);
 }
 
 struct Coordinates {
@@ -32,4 +42,10 @@ struct Offline {
   maxLon @3 :Float64;
   ways @4 :List(Way);
   overlap @5 :Float64;
+  # 0 = legacy (pre-sigmoid-bake). 1 = safeSpeeds populated against the
+  # sigmoid identified by sigmoidHash. Readers treat missing as 0.
+  schemaVersion @6 :UInt16;
+  # 12-char hex prefix of sha256 over the canonical-formatted sigmoid tuple
+  # (A, B, C, D, minLat, maxLat, maxSpeedDefault). Empty on schemaVersion 0.
+  sigmoidHash @7 :Text;
 }

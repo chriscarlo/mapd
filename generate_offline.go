@@ -20,20 +20,26 @@ type TmpNode struct {
 	Longitude float64
 }
 type TmpWay struct {
-	Name             string
-	Ref              string
-	Hazard           string
-	MaxSpeed         float64
-	MaxSpeedForward  float64
-	MaxSpeedBackward float64
-	MaxSpeedAdvisory float64
-	Lanes            uint8
-	MinLat           float64
-	MinLon           float64
-	MaxLat           float64
-	MaxLon           float64
-	OneWay           bool
-	Nodes            []TmpNode
+	Name                      string
+	Ref                       string
+	Hazard                    string
+	MaxSpeed                  float64
+	MaxSpeedForward           float64
+	MaxSpeedBackward          float64
+	MaxSpeedAdvisory          float64
+	Lanes                     uint8
+	MinLat                    float64
+	MinLon                    float64
+	MaxLat                    float64
+	MaxLon                    float64
+	OneWay                    bool
+	Nodes                     []TmpNode
+	WindingForwardLevel       uint8
+	WindingBackwardLevel      uint8
+	WindingForwardScore       uint8
+	WindingBackwardScore      uint8
+	WindingForwardConfidence  uint8
+	WindingBackwardConfidence uint8
 }
 
 type Area struct {
@@ -112,8 +118,8 @@ func GenerateAreas() []Area {
 	return areas
 }
 
-func GenerateOffline(minGenLat int, minGenLon int, maxGenLat int, maxGenLon int, generateEmptyFiles bool) {
-	log.Info().Msg("Generating Offline Map")
+func GenerateOffline(minGenLat int, minGenLon int, maxGenLat int, maxGenLon int, generateEmptyFiles bool, sigCfg SigmoidCfg) {
+	log.Info().Str("sigmoid_hash", sigCfg.Hash()).Msg("Generating Offline Map")
 	EnsureOfflineMapsDirectories()
 	file, err := os.Open("./map.osm.pbf")
 	check(errors.Wrap(err, "could not open map pbf file"))
@@ -182,6 +188,13 @@ func GenerateOffline(minGenLat int, minGenLon int, maxGenLat int, maxGenLon int,
 			tmpWay.MinLon = minLon
 			tmpWay.MaxLat = maxLat
 			tmpWay.MaxLon = maxLon
+			forwardWinding, backwardWinding := ComputeWayWindingMetadata(tmpWay.Nodes)
+			tmpWay.WindingForwardLevel = forwardWinding.Level
+			tmpWay.WindingBackwardLevel = backwardWinding.Level
+			tmpWay.WindingForwardScore = forwardWinding.Score
+			tmpWay.WindingBackwardScore = backwardWinding.Score
+			tmpWay.WindingForwardConfidence = forwardWinding.Confidence
+			tmpWay.WindingBackwardConfidence = backwardWinding.Confidence
 			if minLat < allMinLat {
 				allMinLat = minLat
 			}
@@ -230,6 +243,8 @@ func GenerateOffline(minGenLat int, minGenLon int, maxGenLat int, maxGenLon int,
 		rootOffline.SetMaxLat(area.MaxLat)
 		rootOffline.SetMaxLon(area.MaxLon)
 		rootOffline.SetOverlap(OVERLAP_BOX_DEGREES)
+		rootOffline.SetSchemaVersion(1)
+		check(errors.Wrap(rootOffline.SetSigmoidHash(sigCfg.Hash()), "could not set sigmoid hash"))
 		for i, way := range area.Ways {
 			w := ways.At(i)
 			w.SetMinLat(way.MinLat)
@@ -248,12 +263,45 @@ func GenerateOffline(minGenLat int, minGenLon int, maxGenLat int, maxGenLon int,
 			w.SetAdvisorySpeed(way.MaxSpeedAdvisory)
 			w.SetLanes(way.Lanes)
 			w.SetOneWay(way.OneWay)
+			w.SetWindingForwardLevel(way.WindingForwardLevel)
+			w.SetWindingBackwardLevel(way.WindingBackwardLevel)
+			w.SetWindingForwardScore(way.WindingForwardScore)
+			w.SetWindingBackwardScore(way.WindingBackwardScore)
+			w.SetWindingForwardConfidence(way.WindingForwardConfidence)
+			w.SetWindingBackwardConfidence(way.WindingBackwardConfidence)
 			nodes, err := w.NewNodes(int32(len(way.Nodes)))
 			check(errors.Wrap(err, "could not create way nodes"))
 			for j, node := range way.Nodes {
 				n := nodes.At(j)
 				n.SetLatitude(node.Latitude)
 				n.SetLongitude(node.Longitude)
+			}
+
+			// Bake per-node safe speeds against the live sigmoid. Endpoints
+			// (j=0 and j=len-1) get MaxSpeedDefault since 3-point curvature
+			// is undefined; interior nodes use the same per-triplet curvature
+			// formula the on-device runtime uses (see math.go:GetCurvature),
+			// then map κ → m/s via the sigmoid.
+			//
+			// Note: live runtime curvature smoothing for merges/splits in
+			// math.go:140-159 is intentionally NOT replayed here — it is
+			// context-dependent on adjacent ways and therefore can only be
+			// computed at runtime. The runtime falls back to the live sigmoid
+			// when baked speeds disagree (see vision_turn_controller.py).
+			safeSpeeds, err := w.NewSafeSpeeds(int32(len(way.Nodes)))
+			check(errors.Wrap(err, "could not create way safe speeds"))
+			for j := 0; j < len(way.Nodes); j++ {
+				var k float64
+				if j == 0 || j == len(way.Nodes)-1 {
+					k = 0
+				} else {
+					a := way.Nodes[j-1]
+					b := way.Nodes[j]
+					c := way.Nodes[j+1]
+					curvature, _, _ := GetCurvature(a.Latitude, a.Longitude, b.Latitude, b.Longitude, c.Latitude, c.Longitude)
+					k = math.Abs(curvature)
+				}
+				safeSpeeds.Set(j, CurvatureToSpeed(k, sigCfg))
 			}
 		}
 
